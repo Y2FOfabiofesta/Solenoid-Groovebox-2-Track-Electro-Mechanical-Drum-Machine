@@ -1,0 +1,166 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// --- PIN ---
+const int pinMotoreA = 9;
+const int pinMotoreB = 10;
+const int stepPins[8] = {5, 6, 7, 8, A0, A1, A2, A3};
+#define ENCODER_CLK 2
+#define ENCODER_DT 3
+#define ENCODER_SW 4 
+#define PIN_PLAY_STOP 12 
+
+// --- STATO ---
+bool stepAttivi[2][8] = {{false}, {false}};
+int tracciaSelezionata = 0; 
+bool inEsecuzione = false;  
+
+int statoPulsantePrecedente[8] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+unsigned long ultimoTempoPulsante[8] = {0}; 
+
+// Variabili per il NUOVO antirimbalzo senza delay
+int statoSwPrecedente = HIGH;
+unsigned long ultimoTempoSw = 0;
+int statoPlayPrecedente = HIGH;
+unsigned long ultimoTempoPlay = 0;
+
+// --- TEMPO ---
+volatile int bpm = 120;
+int bpmPrecedente = 120; // Ci serve per capire se la manopola ha girato
+int stepCorrente = 0; 
+unsigned long tempoUltimoStep = 0; 
+
+void leggiEncoder() {
+  static unsigned long ultimoInterrupt = 0;
+  if (millis() - ultimoInterrupt > 5) {
+    if (digitalRead(ENCODER_DT) == digitalRead(ENCODER_CLK)) bpm++; else bpm--;
+    bpm = constrain(bpm, 40, 240);
+  }
+  ultimoInterrupt = millis();
+}
+
+void aggiornaSchermo() {
+  display.invertDisplay(tracciaSelezionata == 1);
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE); 
+  
+  display.setCursor(0, 0);
+  display.print("BPM: "); display.print(bpm);
+  display.setCursor(70, 0);
+  display.print("SEQ: "); display.print(tracciaSelezionata == 0 ? "A" : "B");
+  
+  display.setCursor(0, 55);
+  display.print(inEsecuzione ? "STATO: PLAY" : "STATO: STOP");
+
+  for (int i = 0; i < 8; i++) {
+    int x = i * 15 + 6;
+    int y = 20;
+    int w = 12;
+    int h = 20;
+
+    // Accenti visivi sul battere e levare
+    if (i == 0 || i == 4) {
+      display.fillRect(x + 4, y - 5, 4, 2, SSD1306_WHITE); 
+    }
+
+    if (stepAttivi[tracciaSelezionata][i]) {
+      display.fillRect(x, y, w, h, SSD1306_WHITE);
+    } else {
+      display.drawRect(x, y, w, h, SSD1306_WHITE);
+    }
+
+    if (inEsecuzione && i == stepCorrente) {
+      display.fillRect(x, y + h + 4, w, 3, SSD1306_WHITE);
+    }
+  }
+  
+  display.display();
+}
+
+void setup() {
+  pinMode(pinMotoreA, OUTPUT);
+  pinMode(pinMotoreB, OUTPUT);
+  for (int i = 0; i < 8; i++) pinMode(stepPins[i], INPUT_PULLUP);
+  pinMode(ENCODER_SW, INPUT_PULLUP);
+  pinMode(PIN_PLAY_STOP, INPUT_PULLUP);
+  pinMode(ENCODER_CLK, INPUT_PULLUP);
+  pinMode(ENCODER_DT, INPUT_PULLUP);
+
+  attachInterrupt(digitalPinToInterrupt(ENCODER_CLK), leggiEncoder, FALLING);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  Wire.setClock(400000);
+  aggiornaSchermo();
+}
+
+void loop() {
+  bool refresh = false;
+  unsigned long durataStep = (60000 / bpm) / 4;
+
+  // --- SOLUZIONE PROBLEMA 2: AGGIORNAMENTO LIVE DEI BPM ---
+  if (bpm != bpmPrecedente) {
+    bpmPrecedente = bpm;
+    refresh = true; // Se i BPM cambiano, forza l'aggiornamento dello schermo
+  }
+
+  // --- 1. Tasto Play/Stop (Ora usa millis al posto del delay) ---
+  int letturaPlay = digitalRead(PIN_PLAY_STOP);
+  if (letturaPlay == LOW && statoPlayPrecedente == HIGH) {
+    if (millis() - ultimoTempoPlay > 200) {
+      inEsecuzione = !inEsecuzione;
+      stepCorrente = 0; 
+      tempoUltimoStep = millis();
+      refresh = true;
+      ultimoTempoPlay = millis();
+    }
+  }
+  statoPlayPrecedente = letturaPlay;
+
+  // --- SOLUZIONE PROBLEMA 1: Switch A/B senza delay! ---
+  int letturaSw = digitalRead(ENCODER_SW);
+  if (letturaSw == LOW && statoSwPrecedente == HIGH) {
+    if (millis() - ultimoTempoSw > 200) {
+      tracciaSelezionata = (tracciaSelezionata == 0) ? 1 : 0;
+      refresh = true;
+      ultimoTempoSw = millis();
+    }
+  }
+  statoSwPrecedente = letturaSw;
+
+  // --- 3. Tasti Step ---
+  for (int i = 0; i < 8; i++) {
+    int lettura = digitalRead(stepPins[i]);
+    if (lettura == LOW && statoPulsantePrecedente[i] == HIGH) {
+      if (millis() - ultimoTempoPulsante[i] > 200) {
+        stepAttivi[tracciaSelezionata][i] = !stepAttivi[tracciaSelezionata][i];
+        ultimoTempoPulsante[i] = millis();
+        refresh = true;
+      }
+    }
+    statoPulsantePrecedente[i] = lettura;
+  }
+
+  // --- 4. Esecuzione Metronomo ---
+  if (inEsecuzione && (millis() - tempoUltimoStep >= durataStep)) {
+    tempoUltimoStep = millis();
+    
+    if (stepAttivi[0][stepCorrente]) digitalWrite(pinMotoreA, HIGH);
+    if (stepAttivi[1][stepCorrente]) digitalWrite(pinMotoreB, HIGH);
+    
+    delay(25); // Questo piccolissimo ritardo serve solo per la botta fisica del solenoide
+    digitalWrite(pinMotoreA, LOW);
+    digitalWrite(pinMotoreB, LOW);
+
+    stepCorrente = (stepCorrente + 1) % 8;
+    refresh = true;
+  }
+
+  if (refresh) aggiornaSchermo();
+}
