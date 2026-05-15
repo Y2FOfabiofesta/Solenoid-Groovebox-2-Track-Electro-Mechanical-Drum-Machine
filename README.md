@@ -1,5 +1,7 @@
 
 
+
+
 **Overview**
 The Solenoid Groovebox is a standalone, electro-mechanical drum machine powered by an Arduino Nano. Unlike standard digital synthesizers, this sequencer drives physical solenoids to strike real-world objects (glass, wood, metal), creating an acoustic, organic beat. It features a fully custom non-blocking software architecture, an interactive OLED interface, and dedicated MOSFET power stages for safe hardware control.
 
